@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(cmdstanr)
-register_knitr_engine()
+register_knitr_engine(override = FALSE)
 ```
 
 ## Motivation
@@ -35,7 +35,26 @@ df <- read_csv(
   "https://raw.githubusercontent.com/MaggieLieu/STAN_tutorials/master/Hierarchical/premiereleague.csv",
   col_names = c("home_team", "home_score", "away_score", "away_team")
 )
-df
+
+all_teams <- sort(unique(c(df$home_team, df$away_team))) %>% 
+  setNames(as.list(seq(1, length(.))), .) %>% 
+  as_tibble() %>% 
+  gather()
+
+df <- df %>% 
+  left_join(all_teams %>% rename(home_team_idx = value), by = c("home_team" = "key")) %>% 
+  left_join(all_teams %>% rename(away_team_idx = value), by = c("away_team" = "key"))
+
+
+data <- list(
+  num_teams = nrow(all_teams),
+  num_games = nrow(df),
+  home_team_idx = df$home_team_idx,
+  away_team_idx = df$away_team_idx,
+  home_team_score = df$home_score,
+  away_team_score = df$away_score
+)
+
 
 ```
 
@@ -51,7 +70,8 @@ theta_TEAM2 = exp(attack_ability_TEAM2 - defense_ability_TEAM1)
 ^ take exp to make positive
 
 
-```{stan, output.var="model"}
+```{cmdstan, output.var="model"}
+// This stan chunk results in a CmdStanModel object called "model"
 data {
   int<lower=0> num_teams;
   int<lower=0> num_games;
@@ -68,9 +88,9 @@ parameters {
   
   // hyper parameters
   real mu_attack;
-  real<lower=o> tau_attack;
+  real<lower=0> tau_attack;
   real mu_defense;
-  real<lower=o> tau_defense;
+  real<lower=0> tau_defense;
 }
 
 transformed parameters {
@@ -104,15 +124,79 @@ model {
 ## Model fitting
 
 ```{r}
-model$sample()
+# model$print()
+
+fit <- model$sample(
+  data = data,
+  chains = 4,
+  parallel_chains = 4,
+  seed = 42L
+)
+
 ```
+
+
 
 
 ## Findings
 
 
 ```{r}
-names(model)
+model_summary <- fit$summary() 
+model_summary
+```
+
+```{r}
+model_summary_ <- model_summary %>% 
+  filter(str_detect(variable, "_ability")) %>% 
+  mutate(
+    team_idx = as.integer(str_extract(variable, "\\d+")),
+    type = str_match(variable, "(.*)_ability.*")[,2]
+  ) %>% 
+  left_join(all_teams %>% rename(team_name = key), by = c("team_idx" = "value")) %>% 
+  select(team_name, type, mean, median, sd, q5, q95)
+model_summary_
+```
+
+```{r}
+model_summary_ %>% 
+  pivot_wider(id_cols = team_name, names_from = type, values_from = mean) %>% 
+  ggplot(aes(
+    x = attack, 
+    y = defense, 
+    label = team_name
+  )) +
+  geom_point() + 
+  ggrepel::geom_text_repel()
+
+
+model_summary_ %>% 
+  pivot_wider(id_cols = team_name, names_from = type, values_from = c(mean, sd, q5, q95)) %>% 
+  ggplot(aes(
+    x = mean_attack, 
+    y = mean_defense, 
+    label = team_name
+  )) +
+  geom_point() + 
+  geom_pointrange(aes(
+    xmin = mean_attack - sd_attack,
+    xmax = mean_attack + sd_attack
+  )) + 
+  geom_pointrange(aes(
+    ymin = mean_defense - sd_defense,
+    ymax = mean_defense + sd_defense
+  )) + 
+  # geom_pointrange(aes(
+  #   xmin = q5_attack,
+  #   xmax = q95_attack
+  # )) + 
+  # geom_pointrange(aes(
+  #   ymin = q5_defense,
+  #   ymax = q95_defense
+  # )) + 
+  ggrepel::geom_text_repel()
+
+
 ```
 
 
